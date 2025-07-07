@@ -35,13 +35,18 @@ func (lk *Lock) Acquire() {
 		value, version, getErr := lk.ck.Get(lk.lockKey)
 		// try acquire the lock if there's no lock or the lock already be released
 		if getErr == rpc.ErrNoKey || value == "" {
-			for {
-				putErr := lk.ck.Put(lk.lockKey, lk.lockValue, version)
-				if putErr == rpc.OK {
+			putErr := lk.ck.Put(lk.lockKey, lk.lockValue, version)
+			if putErr == rpc.OK {
+				return
+			}
+			if putErr == rpc.ErrVersion {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			if putErr == rpc.ErrMaybe {
+				owner, _, _ := lk.ck.Get(lk.lockKey)
+				if owner == lk.lockValue {
 					return
-				}
-				if putErr == rpc.ErrVersion {
-					break
 				}
 			}
 		}
@@ -57,14 +62,19 @@ func (lk *Lock) Release() {
 		if getErr == rpc.ErrNoKey || value == "" || value != lk.lockValue {
 			return
 		}
-		for {
-			// try to release the lock
-			putErr := lk.ck.Put(lk.lockKey, "", version)
-			if putErr == rpc.OK {
+		// try to release the lock
+		putErr := lk.ck.Put(lk.lockKey, "", version)
+		if putErr == rpc.OK {
+			return
+		}
+		if putErr == rpc.ErrVersion {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if putErr == rpc.ErrMaybe {
+			owner, newVersion, newGetErr := lk.ck.Get(lk.lockKey)
+			if newGetErr == rpc.ErrNoKey || owner == "" || owner != lk.lockValue || newVersion != version {
 				return
-			}
-			if putErr == rpc.ErrVersion {
-				break
 			}
 		}
 		time.Sleep(10 * time.Millisecond)

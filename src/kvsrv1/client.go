@@ -1,7 +1,7 @@
 package kvsrv
 
 import (
-	"log"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	kvtest "6.5840/kvtest1"
@@ -33,15 +33,18 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	// You will have to modify this function.
 	args := rpc.GetArgs{Key: key}
 	reply := rpc.GetReply{}
-	err := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
-	if !err {
-		log.Fatal("Error when send rpc Get request")
+	for {
+		err := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
+		if err {
+			if reply.Err != rpc.OK {
+				return "", 0, reply.Err
+			} else {
+				return reply.Value, reply.Version, reply.Err
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	if reply.Err != rpc.OK {
-		return "", 0, reply.Err
-	} else {
-		return reply.Value, reply.Version, reply.Err
-	}
+
 }
 
 // Put updates key with value only if the version in the
@@ -65,12 +68,24 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
 	args := rpc.PutArgs{Key: key, Value: value, Version: version}
 	reply := rpc.PutReply{}
-	err := ck.clnt.Call(ck.server, "KVServer.Put", &args, &reply)
-	if !err {
-		log.Fatal("Error when send rpc Put request")
+	isFirstAttempt := true
+	for {
+		err := ck.clnt.Call(ck.server, "KVServer.Put", &args, &reply)
+		if err {
+			switch reply.Err {
+			case rpc.OK:
+				return rpc.OK
+			case rpc.ErrVersion:
+				if isFirstAttempt {
+					return rpc.ErrVersion
+				} else {
+					return rpc.ErrMaybe
+				}
+			case rpc.ErrNoKey:
+				return rpc.ErrNoKey
+			}
+		}
+		isFirstAttempt = false
+		time.Sleep(100 * time.Millisecond)
 	}
-	// if reply.Err != rpc.OK {
-	// 	fmt.Println("Error when Put, Error:", reply.Err)
-	// }
-	return reply.Err
 }
