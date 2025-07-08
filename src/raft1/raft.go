@@ -251,6 +251,10 @@ func (rf *Raft) ticker() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
+		_, isLeader := rf.GetState()
+		if isLeader {
+
+		}
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
