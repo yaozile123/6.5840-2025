@@ -157,31 +157,20 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	if args.Term < rf.currentTerm || len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].term != args.PrevLogTerm {
+	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
 	}
-	conflictIndex := -1
-	for i, entry := range args.Entries {
-		index := args.PrevLogIndex + i + 1
-		if len(rf.log) <= index {
-			break
-		}
-		if rf.log[index].term != entry.term {
-			conflictIndex = index
-			break
-		}
+	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].term != args.PrevLogTerm {
+		reply.Term = args.Term
+		reply.Success = false
+		return
 	}
-	if conflictIndex != -1 {
-		rf.log = rf.log[:conflictIndex]
-	}
-	for i, entry := range args.Entries {
-		index := args.PrevLogIndex + 1 + i
-		if index >= len(rf.log) {
-			rf.log = append(rf.log, entry)
-		}
-	}
+	reply.Term = args.Term
+	reply.Success = true
+	rf.log = rf.log[:args.PrevLogIndex+1]
+	rf.log = append(rf.log, args.Entries...)
 }
 
 // example code to send a RequestVote RPC to a server.
