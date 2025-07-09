@@ -149,10 +149,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.votedFor = -1
 			rf.state = Follower
 		}
-		reply.Term = args.Term
+		// reply.Term = args.Term
+		reply.Term = rf.currentTerm
 		if (rf.votedFor == -1 || rf.votedFor == args.CandiateId) && (rf.isLogUpToDate(args.LastLogTerm, args.LastLogIndex)) {
 			rf.votedFor = args.CandiateId
 			reply.VoteGranted = true
+			rf.resetElectionTimeouts()
 		} else {
 			reply.VoteGranted = false
 		}
@@ -192,23 +194,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
-	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		reply.Term = args.Term
-		reply.Success = false
-		return
-	}
+
+	rf.resetElectionTimeouts()
+
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 	}
 	rf.state = Follower
-	reply.Success = true
 	reply.Term = rf.currentTerm
-	rf.resetElectionTimeouts()
+
+	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+		return
+	}
+
 	if args.Entries != nil {
 		rf.log = rf.log[:args.PrevLogIndex+1]
 		rf.log = append(rf.log, args.Entries...)
 	}
+	reply.Success = true
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -216,6 +221,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
+// called after grab lock in ticker()
 func (rf *Raft) becomeLeader() {
 	if rf.state == Leader {
 		return
@@ -229,6 +235,7 @@ func (rf *Raft) becomeLeader() {
 	for i := range rf.matchIndex {
 		rf.matchIndex[i] = 0
 	}
+	rf.sendHeartbeats()
 
 }
 
@@ -236,6 +243,7 @@ func (rf *Raft) becomeLeader() {
 func (rf *Raft) startElection() {
 	rf.state = Candidate
 	rf.currentTerm += 1
+	rf.votedFor = rf.me
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandiateId:   rf.me,
@@ -243,51 +251,38 @@ func (rf *Raft) startElection() {
 		LastLogTerm:  rf.log[len(rf.log)-1].Term,
 	}
 	currentTerm := rf.currentTerm
-	votesChan := make(chan bool, len(rf.peers))
-	for i := range rf.peers {
+	count := 0
+	finished := 0
+	total := len(rf.peers)
+	majority := total/2 + 1
+	cond := sync.NewCond(&rf.mu)
+	for i := 0; i < total; i++ {
 		go func(server int) {
-			// rf.mu.Lock()
-			// defer rf.mu.Unlock()
 			reply := &RequestVoteReply{}
-			if rf.sendRequestVote(i, args, reply) {
-				rf.mu.Lock()
-				defer rf.mu.Unlock()
+			err := rf.sendRequestVote(server, args, reply)
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			if err {
 				if reply.Term > rf.currentTerm {
 					rf.currentTerm = reply.Term
 					rf.votedFor = -1
 					rf.state = Follower
-					rf.resetElectionTimeouts()
-					votesChan <- false
-					return
+					// rf.resetElectionTimeouts()
+				} else if rf.state == Candidate && rf.currentTerm == currentTerm && reply.VoteGranted {
+					count++
 				}
-				if rf.state == Candidate && rf.currentTerm == currentTerm {
-					votesChan <- reply.VoteGranted
-				} else {
-					votesChan <- false
-				}
-			} else {
-				votesChan <- false
 			}
+			finished++
+			cond.Broadcast()
 		}(i)
 	}
-	go func() {
-		voteCount := 0
-		majority := len(rf.peers)/2 + 1
-
-		for i := 0; i < len(rf.peers)-1; i++ {
-			if <-votesChan {
-				voteCount++
-				if voteCount >= majority {
-					rf.mu.Lock()
-					if rf.state == Candidate && rf.currentTerm == currentTerm {
-						rf.becomeLeader()
-					}
-					rf.mu.Unlock()
-					return
-				}
-			}
-		}
-	}()
+	// we already have the lock from ticker()
+	for count < majority && finished < total {
+		cond.Wait()
+	}
+	if count >= majority {
+		rf.becomeLeader()
+	}
 }
 
 // called after grab lock in ticker()
