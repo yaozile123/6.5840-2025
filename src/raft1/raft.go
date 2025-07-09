@@ -244,6 +244,8 @@ func (rf *Raft) startElection() {
 	rf.state = Candidate
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
+	rf.resetElectionTimeouts()
+
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandiateId:   rf.me,
@@ -251,12 +253,16 @@ func (rf *Raft) startElection() {
 		LastLogTerm:  rf.log[len(rf.log)-1].Term,
 	}
 	currentTerm := rf.currentTerm
-	count := 0
-	finished := 0
+	count := 1
+	finished := 1
 	total := len(rf.peers)
 	majority := total/2 + 1
 	cond := sync.NewCond(&rf.mu)
+
 	for i := 0; i < total; i++ {
+		if i == rf.me {
+			continue
+		}
 		go func(server int) {
 			reply := &RequestVoteReply{}
 			err := rf.sendRequestVote(server, args, reply)
@@ -267,7 +273,7 @@ func (rf *Raft) startElection() {
 					rf.currentTerm = reply.Term
 					rf.votedFor = -1
 					rf.state = Follower
-					// rf.resetElectionTimeouts()
+					rf.resetElectionTimeouts()
 				} else if rf.state == Candidate && rf.currentTerm == currentTerm && reply.VoteGranted {
 					count++
 				}
@@ -276,12 +282,19 @@ func (rf *Raft) startElection() {
 			cond.Broadcast()
 		}(i)
 	}
-	// we already have the lock from ticker()
-	for count < majority && finished < total {
+
+	for count < majority && finished < total && rf.state == Candidate && rf.currentTerm == currentTerm {
 		cond.Wait()
 	}
-	if count >= majority {
+
+	if count >= majority && rf.state == Candidate && rf.currentTerm == currentTerm {
 		rf.becomeLeader()
+	} else if rf.state == Candidate {
+		rf.state = Follower
+		// 额外的随机延迟，避免立即重新选举导致分票
+		extraDelay := time.Duration(rand.Intn(50)) * time.Millisecond
+		rf.resetElectionTimeouts()
+		rf.lastHeartbeat = time.Now().Add(extraDelay)
 	}
 }
 
@@ -299,7 +312,7 @@ func (rf *Raft) sendHeartbeats() {
 
 func (rf *Raft) resetElectionTimeouts() {
 	rf.lastHeartbeat = time.Now()
-	rf.electionTimeouts = time.Duration(250+rand.Intn(150)) * time.Millisecond
+	rf.electionTimeouts = time.Duration(350+rand.Intn(200)) * time.Millisecond // 350-550ms
 }
 
 func (rf *Raft) sendHeartbeatToServer(server int) {
@@ -307,6 +320,9 @@ func (rf *Raft) sendHeartbeatToServer(server int) {
 	args := &AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
+		PrevLogIndex: 0,
+		PrevLogTerm:  rf.log[0].Term,
+		Entries:      nil,
 		LeaderCommit: rf.commitIndex,
 	}
 	reply := &AppendEntriesReply{}
@@ -410,9 +426,9 @@ func (rf *Raft) ticker() {
 			}
 		}
 		rf.mu.Unlock()
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+		// pause for a random amount of time between 50 and 100
+		// milliseconds - 更短的心跳间隔
+		ms := 50 + (rand.Int63() % 50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
