@@ -24,19 +24,18 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
-// example RequestVote RPC handler.
+// example RequestVote RPC handler, rf.me receive vote request from args.CandidateId
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	DPrintf("%d receiving request vote from %d, term %d", rf.me, args.CandiateId, args.Term)
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 	} else {
 		if args.Term > rf.currentTerm {
-			rf.currentTerm = args.Term
-			rf.votedFor = -1
-			rf.state = Follower
+			rf.becomeFollower(args.Term)
 		}
 		// reply.Term = args.Term
 		reply.Term = rf.currentTerm
@@ -48,6 +47,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = false
 		}
 	}
+	DPrintf("%d vote for %d with, term %d, vote result %v", rf.me, args.CandiateId, args.Term, reply.VoteGranted)
 }
 
 func (rf *Raft) isLogUpToDate(lastLogTerm int, lastLogIndex int) bool {
@@ -61,31 +61,14 @@ func (rf *Raft) isLogUpToDate(lastLogTerm int, lastLogIndex int) bool {
 	return false
 }
 
-// called after grab lock in ticker()
-func (rf *Raft) becomeLeader() {
+// should call after grab the lock under ticker()
+func (rf *Raft) startElection() {
 	if rf.state == Leader {
 		return
 	}
-	rf.state = Leader
-	rf.nextIndex = make([]int, len(rf.peers))
-	for i := range rf.nextIndex {
-		rf.nextIndex[i] = len(rf.log)
-	}
-	rf.matchIndex = make([]int, len(rf.peers))
-	for i := range rf.matchIndex {
-		rf.matchIndex[i] = 0
-	}
-	rf.sendHeartbeats()
 
-}
-
-// should call after grab the lock under ticker()
-func (rf *Raft) startElection() {
-	rf.state = Candidate
-	rf.currentTerm += 1
-	rf.votedFor = rf.me
-	rf.resetElectionTimeouts()
-
+	rf.becomeCandidate()
+	DPrintf("%d starting new election, term %d", rf.me, rf.currentTerm)
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandiateId:   rf.me,
@@ -105,18 +88,19 @@ func (rf *Raft) startElection() {
 		}
 		go func(server int) {
 			reply := &RequestVoteReply{}
+			DPrintf("%d sending vote request to %d, term: %d", rf.me, server, currentTerm)
 			err := rf.sendRequestVote(server, args, reply)
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 			if err {
 				if reply.Term > rf.currentTerm {
-					rf.currentTerm = reply.Term
-					rf.votedFor = -1
-					rf.state = Follower
-					rf.resetElectionTimeouts()
-				} else if rf.state == Candidate && rf.currentTerm == currentTerm && reply.VoteGranted {
+					rf.becomeFollower(reply.Term)
+				} else if rf.state == Candidate && currentTerm == reply.Term && reply.VoteGranted {
 					count++
 				}
+				DPrintf("%d received vote reply from %d, result %v", rf.me, server, reply.VoteGranted)
+			} else {
+				DPrintf("%d faild to receive vote reply from %d", rf.me, server)
 			}
 			finished++
 			cond.Broadcast()
@@ -129,17 +113,12 @@ func (rf *Raft) startElection() {
 
 	if count >= majority && rf.state == Candidate && rf.currentTerm == currentTerm {
 		rf.becomeLeader()
-	} else if rf.state == Candidate {
-		rf.state = Follower
-		extraDelay := time.Duration(rand.Intn(50)) * time.Millisecond
-		rf.resetElectionTimeouts()
-		rf.lastHeartbeat = time.Now().Add(extraDelay)
 	}
 }
 
 func (rf *Raft) resetElectionTimeouts() {
 	rf.lastHeartbeat = time.Now()
-	rf.electionTimeouts = time.Duration(350+rand.Intn(200)) * time.Millisecond // 350-550ms
+	rf.electionTimeouts = time.Duration(200+rand.Intn(150)) * time.Millisecond // 200-350ms
 }
 
 // example code to send a RequestVote RPC to a server.

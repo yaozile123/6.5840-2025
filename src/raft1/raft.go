@@ -65,6 +65,39 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
+func (rf *Raft) becomeFollower(term int) {
+	rf.currentTerm = term
+	rf.votedFor = -1
+	DPrintf("%d become to Follower from %v", rf.me, rf.state)
+	rf.state = Follower
+}
+
+func (rf *Raft) becomeCandidate() {
+	DPrintf("%d become to Candidate from %v", rf.me, rf.state)
+	rf.state = Candidate
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	rf.resetElectionTimeouts()
+}
+
+// called after grab lock in ticker()
+func (rf *Raft) becomeLeader() {
+	if rf.state == Leader {
+		return
+	}
+	rf.state = Leader
+	rf.nextIndex = make([]int, len(rf.peers))
+	for i := range rf.nextIndex {
+		rf.nextIndex[i] = len(rf.log)
+	}
+	rf.matchIndex = make([]int, len(rf.peers))
+	for i := range rf.matchIndex {
+		rf.matchIndex[i] = 0
+	}
+	DPrintf("%d become leader, term %d", rf.me, rf.currentTerm)
+	rf.sendHeartbeats()
+}
+
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
@@ -135,6 +168,7 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
+	DPrintf("%d received AppendEntries from %d", rf.me, args.LeaderId)
 	defer rf.mu.Unlock()
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
@@ -144,11 +178,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.resetElectionTimeouts()
 
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
+	if args.Term >= rf.currentTerm {
+		rf.becomeFollower(args.Term)
 	}
-	rf.state = Follower
+	// rf.state = Follower
 	reply.Term = rf.currentTerm
 
 	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
@@ -159,6 +192,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Entries != nil {
 		rf.log = rf.log[:args.PrevLogIndex+1]
 		rf.log = append(rf.log, args.Entries...)
+	}
+
+	if rf.commitIndex < args.LeaderCommit {
+		lastLogIndex := len(rf.log) - 1
+		if args.LeaderCommit < lastLogIndex {
+			rf.commitIndex = args.LeaderCommit
+		} else {
+			rf.commitIndex = lastLogIndex
+		}
 	}
 	reply.Success = true
 }
@@ -173,34 +215,37 @@ func (rf *Raft) sendHeartbeats() {
 	if rf.state != Leader {
 		return
 	}
+	term := rf.currentTerm
+	commitIndex := rf.commitIndex
+	DPrintf("%d sending heartbeats, term %d", rf.me, term)
 	for i := range rf.peers {
 		if rf.me != i {
-			go rf.sendHeartbeatToServer(i)
+			go rf.sendHeartbeatToServer(i, term, commitIndex)
 		}
 	}
 }
 
-func (rf *Raft) sendHeartbeatToServer(server int) {
-	rf.mu.Lock()
+func (rf *Raft) sendHeartbeatToServer(server int, term int, commitIndex int) {
+	DPrintf("%d sending heartbeats to %d, term %d", rf.me, server, term)
 	args := &AppendEntriesArgs{
-		Term:         rf.currentTerm,
+		Term:         term,
 		LeaderId:     rf.me,
 		PrevLogIndex: 0,
-		PrevLogTerm:  rf.log[0].Term,
+		PrevLogTerm:  0,
 		Entries:      nil,
-		LeaderCommit: rf.commitIndex,
+		LeaderCommit: commitIndex,
 	}
 	reply := &AppendEntriesReply{}
-	rf.mu.Unlock()
 	if rf.sendAppendEntries(server, args, reply) {
 		rf.mu.Lock()
+		DPrintf("%d received heartbeats reply from %d, term %d", rf.me, server, term)
 		if reply.Term > rf.currentTerm {
-			rf.currentTerm = reply.Term
-			rf.votedFor = -1
-			rf.state = Follower
-			rf.resetElectionTimeouts()
+			DPrintf("%d received reply with higher term, converting to Follower", rf.me)
+			rf.becomeFollower(reply.Term)
 		}
 		rf.mu.Unlock()
+	} else {
+		DPrintf("%d did not receive heartbeats from %d, term %d", rf.me, server, term)
 	}
 }
 
@@ -259,8 +304,7 @@ func (rf *Raft) ticker() {
 			}
 		}
 		rf.mu.Unlock()
-		// pause for a random amount of time between 50 and 100
-		// milliseconds - 更短的心跳间隔
+		// pause for a random amount of time between 50 and 100 ms
 		ms := 50 + (rand.Int63() % 50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
@@ -294,7 +338,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
+	DPrintf("server %d initialized", rf.me)
 	// start ticker goroutine to start elections
 	go rf.ticker()
 

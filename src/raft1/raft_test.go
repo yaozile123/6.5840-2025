@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 // The tester generously allows solutions to complete elections in one second
@@ -115,17 +115,24 @@ func TestManyElections3A(t *testing.T) {
 		i2 := rand.Int() % servers
 		i3 := rand.Int() % servers
 		ts.g.DisconnectAll(i1)
+		DPrintf("%d disconnect", i1)
 		ts.g.DisconnectAll(i2)
+		DPrintf("%d disconnect", i2)
 		ts.g.DisconnectAll(i3)
+		DPrintf("%d disconnect", i3)
 		tester.AnnotateConnection(ts.g.GetConnected())
 
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
+		DPrintf("checking leader...")
 		ts.checkOneLeader()
 
 		ts.g.ConnectOne(i1)
+		DPrintf("%d reconnect", i1)
 		ts.g.ConnectOne(i2)
+		DPrintf("%d reconnect", i2)
 		ts.g.ConnectOne(i3)
+		DPrintf("%d reconnect", i3)
 		tester.AnnotateConnection(ts.g.GetConnected())
 	}
 	ts.checkOneLeader()
