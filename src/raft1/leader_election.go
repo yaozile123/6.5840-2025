@@ -11,7 +11,7 @@ import (
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
 	Term         int // candidate's term
-	CandiateId   int // id of candiate requesting vote
+	CandidateId  int // id of candidate requesting vote
 	LastLogIndex int // index of candidate’s last log entry
 	LastLogTerm  int // term of candidate’s last log entry
 }
@@ -29,25 +29,33 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("%d receiving request vote from %d, term %d", rf.me, args.CandiateId, args.Term)
+	DPrintf("%d receiving request vote from %d, term %d", rf.me, args.CandidateId, args.Term)
 	if args.Term < rf.currentTerm {
+		DPrintf("%d declined request vote from %d, term %d, reason: arg term less than current node's term %v < %v", rf.me, args.CandidateId, args.Term, args.Term, rf.currentTerm)
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 	} else {
 		if args.Term > rf.currentTerm {
 			rf.becomeFollower(args.Term)
 		}
-		// reply.Term = args.Term
 		reply.Term = rf.currentTerm
-		if (rf.votedFor == -1 || rf.votedFor == args.CandiateId) && (rf.isLogUpToDate(args.LastLogTerm, args.LastLogIndex)) {
-			rf.votedFor = args.CandiateId
+		if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && (rf.isLogUpToDate(args.LastLogTerm, args.LastLogIndex)) {
+			rf.votedFor = args.CandidateId
 			reply.VoteGranted = true
 			rf.resetElectionTimeouts()
 		} else {
 			reply.VoteGranted = false
+			if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
+				DPrintf("%d declined request vote from %d, term %d, reason: already voted for %d", rf.me, args.CandidateId, args.Term, rf.votedFor)
+			} else {
+				myLastLogTerm := rf.log[len(rf.log)-1].Term
+				myLastLogIndex := len(rf.log) - 1
+				DPrintf("%d declined request vote from %d, term %d, reason: candidate's log not up-to-date (candidate: term=%d, index=%d vs mine: term=%d, index=%d)",
+					rf.me, args.CandidateId, args.Term, args.LastLogTerm, args.LastLogIndex, myLastLogTerm, myLastLogIndex)
+			}
 		}
 	}
-	DPrintf("%d vote for %d with, term %d, vote result %v", rf.me, args.CandiateId, args.Term, reply.VoteGranted)
+	DPrintf("%d vote for %d with, term %d, vote result %v", rf.me, args.CandidateId, args.Term, reply.VoteGranted)
 }
 
 func (rf *Raft) isLogUpToDate(lastLogTerm int, lastLogIndex int) bool {
@@ -66,12 +74,11 @@ func (rf *Raft) startElection() {
 	if rf.state == Leader {
 		return
 	}
-
 	rf.becomeCandidate()
 	DPrintf("%d starting new election, term %d", rf.me, rf.currentTerm)
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
-		CandiateId:   rf.me,
+		CandidateId:  rf.me,
 		LastLogIndex: len(rf.log) - 1,
 		LastLogTerm:  rf.log[len(rf.log)-1].Term,
 	}
@@ -82,17 +89,17 @@ func (rf *Raft) startElection() {
 	majority := total/2 + 1
 	cond := sync.NewCond(&rf.mu)
 
-	for i := range total {
+	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
 		go func(server int) {
 			reply := &RequestVoteReply{}
 			DPrintf("%d sending vote request to %d, term: %d", rf.me, server, currentTerm)
-			err := rf.sendRequestVote(server, args, reply)
+			ok := rf.sendRequestVote(server, args, reply)
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
-			if err {
+			if ok {
 				if reply.Term > rf.currentTerm {
 					rf.becomeFollower(reply.Term)
 				} else if rf.state == Candidate && currentTerm == reply.Term && reply.VoteGranted {
@@ -118,7 +125,7 @@ func (rf *Raft) startElection() {
 
 func (rf *Raft) resetElectionTimeouts() {
 	rf.lastHeartbeat = time.Now()
-	rf.electionTimeouts = time.Duration(200+rand.Intn(150)) * time.Millisecond // 200-350ms
+	rf.electionTimeouts = time.Duration(150+rand.Intn(150)) * time.Millisecond
 }
 
 // example code to send a RequestVote RPC to a server.

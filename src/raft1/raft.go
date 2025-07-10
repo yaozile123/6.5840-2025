@@ -8,7 +8,7 @@ package raft
 
 import (
 	//	"bytes"
-	"math/rand"
+
 	"sync"
 	"sync/atomic"
 	"time"
@@ -170,18 +170,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	DPrintf("%d received AppendEntries from %d", rf.me, args.LeaderId)
 	defer rf.mu.Unlock()
+	reply.Term = rf.currentTerm
+	reply.Success = false
 	if args.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
-		reply.Success = false
 		return
 	}
-
 	rf.resetElectionTimeouts()
-
-	if args.Term >= rf.currentTerm {
+	if args.Term > rf.currentTerm || (rf.state == Candidate && args.Term == rf.currentTerm) {
 		rf.becomeFollower(args.Term)
 	}
-	// rf.state = Follower
 	reply.Term = rf.currentTerm
 
 	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
@@ -196,11 +193,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if rf.commitIndex < args.LeaderCommit {
 		lastLogIndex := len(rf.log) - 1
-		if args.LeaderCommit < lastLogIndex {
-			rf.commitIndex = args.LeaderCommit
-		} else {
-			rf.commitIndex = lastLogIndex
-		}
+		rf.commitIndex = min(args.LeaderCommit, lastLogIndex)
 	}
 	reply.Success = true
 }
@@ -292,20 +285,25 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-
 		// Your code here (3A)
 		// Check if a leader election should be started.
 		rf.mu.Lock()
+		elapsed := time.Since(rf.lastHeartbeat)
+		remaining := rf.electionTimeouts - elapsed
+		DPrintf("%d status check - state: %v, term: %d, time until timeout: %v",
+			rf.me, rf.state, rf.currentTerm, remaining)
 		if rf.state == Leader {
 			rf.sendHeartbeats()
 		} else {
-			if time.Since(rf.lastHeartbeat) > rf.electionTimeouts {
+			if remaining < 0 {
 				rf.startElection()
 			}
 		}
 		rf.mu.Unlock()
+
 		// pause for a random amount of time between 50 and 100 ms
-		ms := 50 + (rand.Int63() % 50)
+		// ms := 50 + (rand.Int63() % 50)
+		ms := 50
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }

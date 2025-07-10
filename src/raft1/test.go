@@ -62,6 +62,7 @@ func (ts *Test) restart(i int) {
 }
 
 func (ts *Test) checkOneLeader() int {
+	DPrintf("checking for a single leader")
 	tester.AnnotateCheckerBegin("checking for a single leader")
 	for iters := 0; iters < 10; iters++ {
 		ms := 450 + (rand.Int63() % 100)
