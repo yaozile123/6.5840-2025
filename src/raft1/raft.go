@@ -9,6 +9,7 @@ package raft
 import (
 	//	"bytes"
 
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,21 +35,22 @@ type LogEntry struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu               sync.Mutex          // Lock to protect shared access to this peer's state
-	peers            []*labrpc.ClientEnd // RPC end points of all peers
-	persister        *tester.Persister   // Object to hold this peer's persisted state
-	me               int                 // this peer's index into peers[]
-	dead             int32               // set by Kill().
-	currentTerm      int                 // current term
-	votedFor         int                 // candidateId that received vote in current term
-	commitIndex      int                 // index of highest log entry known to already be committed
-	lastApplied      int                 // index of highest log entry already applied to state machine
-	nextIndex        []int               // for each server, index of the next log entry to send to that server
-	matchIndex       []int               // for each server, index of highest log entry known to be replicated on server
-	log              []LogEntry          // index start at 1
-	state            State               // candidate, leader, follower
-	electionTimeouts time.Duration
-	lastHeartbeat    time.Time
+	mu                 sync.Mutex          // Lock to protect shared access to this peer's state
+	peers              []*labrpc.ClientEnd // RPC end points of all peers
+	persister          *tester.Persister   // Object to hold this peer's persisted state
+	me                 int                 // this peer's index into peers[]
+	dead               int32               // set by Kill().
+	currentTerm        int                 // current term
+	votedFor           int                 // candidateId that received vote in current term
+	commitIndex        int                 // index of highest log entry known to already be committed
+	lastApplied        int                 // index of highest log entry already applied to state machine
+	nextIndex          []int               // for each server, index of the next log entry to send to that server
+	matchIndex         []int               // for each server, index of highest log entry known to be replicated on server
+	log                []LogEntry          // index start at 1
+	state              State               // candidate, leader, follower
+	electionTimeouts   time.Time
+	heartbeatsTimeouts time.Time
+	heartbeatsTime     time.Duration
 }
 
 // return currentTerm and whether this server
@@ -96,6 +98,15 @@ func (rf *Raft) becomeLeader() {
 	}
 	DPrintf("%d become leader, term %d", rf.me, rf.currentTerm)
 	rf.sendHeartbeats()
+}
+
+func (rf *Raft) resetElectionTimeouts() {
+	timeout := time.Duration(150+rand.Intn(150)) * time.Millisecond
+	rf.electionTimeouts = time.Now().Add(timeout)
+}
+
+func (rf *Raft) resetHeartBeatsTimeouts() {
+	rf.heartbeatsTimeouts = time.Now().Add(rf.heartbeatsTime)
 }
 
 // save Raft's persistent state to stable storage,
@@ -242,6 +253,14 @@ func (rf *Raft) sendHeartbeatToServer(server int, term int, commitIndex int) {
 	}
 }
 
+func (rf *Raft) isElectionTimeout() bool {
+	return time.Now().After(rf.electionTimeouts)
+}
+
+func (rf *Raft) isHeartbeatsTimeout() bool {
+	return time.Now().After(rf.heartbeatsTimeouts)
+}
+
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -288,22 +307,23 @@ func (rf *Raft) ticker() {
 		// Your code here (3A)
 		// Check if a leader election should be started.
 		rf.mu.Lock()
-		elapsed := time.Since(rf.lastHeartbeat)
-		remaining := rf.electionTimeouts - elapsed
-		DPrintf("%d status check - state: %v, term: %d, time until timeout: %v",
-			rf.me, rf.state, rf.currentTerm, remaining)
 		if rf.state == Leader {
-			rf.sendHeartbeats()
+			if rf.isHeartbeatsTimeout() {
+				DPrintf("leader %d heartbeats timeout, starting send heartbeats", rf.me)
+				rf.sendHeartbeats()
+				rf.resetHeartBeatsTimeouts()
+			}
 		} else {
-			if remaining < 0 {
+			if rf.isElectionTimeout() {
+				DPrintf("%d election timeout, starting election", rf.me)
 				rf.startElection()
 			}
 		}
 		rf.mu.Unlock()
 
 		// pause for a random amount of time between 50 and 100 ms
-		// ms := 50 + (rand.Int63() % 50)
-		ms := 50
+		// use random amount of time to avoid thundering herd
+		ms := 10 + (rand.Int63() % 50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
@@ -332,6 +352,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = Follower
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.heartbeatsTime = time.Millisecond * 100
 	rf.resetElectionTimeouts()
 
 	// initialize from state persisted before a crash

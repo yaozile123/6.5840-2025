@@ -1,9 +1,7 @@
 package raft
 
 import (
-	"math/rand"
 	"sync"
-	"time"
 )
 
 // example RequestVote RPC arguments structure.
@@ -29,32 +27,34 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("%d receiving request vote from %d, term %d", rf.me, args.CandidateId, args.Term)
+	DPrintf("%d receiving request vote from %d, term %d, rf current state: term %d, vote for %d", rf.me, args.CandidateId, args.Term, rf.currentTerm, rf.votedFor)
 	if args.Term < rf.currentTerm {
 		DPrintf("%d declined request vote from %d, term %d, reason: arg term less than current node's term %v < %v", rf.me, args.CandidateId, args.Term, args.Term, rf.currentTerm)
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
-	} else {
-		if args.Term > rf.currentTerm {
-			rf.becomeFollower(args.Term)
-		}
-		reply.Term = rf.currentTerm
-		if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && (rf.isLogUpToDate(args.LastLogTerm, args.LastLogIndex)) {
-			rf.votedFor = args.CandidateId
-			reply.VoteGranted = true
-			rf.resetElectionTimeouts()
-		} else {
-			reply.VoteGranted = false
-			if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
-				DPrintf("%d declined request vote from %d, term %d, reason: already voted for %d", rf.me, args.CandidateId, args.Term, rf.votedFor)
-			} else {
-				myLastLogTerm := rf.log[len(rf.log)-1].Term
-				myLastLogIndex := len(rf.log) - 1
-				DPrintf("%d declined request vote from %d, term %d, reason: candidate's log not up-to-date (candidate: term=%d, index=%d vs mine: term=%d, index=%d)",
-					rf.me, args.CandidateId, args.Term, args.LastLogTerm, args.LastLogIndex, myLastLogTerm, myLastLogIndex)
-			}
-		}
+		return
 	}
+	if args.Term == rf.currentTerm && rf.votedFor != -1 && rf.votedFor != args.CandidateId {
+		DPrintf("%d declined request vote from %d, term %d, reason: already voted for %d", rf.me, args.CandidateId, args.Term, rf.votedFor)
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+	if args.Term > rf.currentTerm {
+		rf.becomeFollower(args.Term)
+	}
+	reply.Term = rf.currentTerm
+	if !rf.isLogUpToDate(args.LastLogTerm, args.LastLogIndex) {
+		myLastLogTerm := rf.log[len(rf.log)-1].Term
+		myLastLogIndex := len(rf.log) - 1
+		DPrintf("%d declined request vote from %d, term %d, reason: candidate's log not up-to-date (candidate: term=%d, index=%d vs mine: term=%d, index=%d)",
+			rf.me, args.CandidateId, args.Term, args.LastLogTerm, args.LastLogIndex, myLastLogTerm, myLastLogIndex)
+		reply.VoteGranted = false
+		return
+	}
+	rf.votedFor = args.CandidateId
+	reply.VoteGranted = true
+	rf.resetElectionTimeouts()
 	DPrintf("%d vote for %d with, term %d, vote result %v", rf.me, args.CandidateId, args.Term, reply.VoteGranted)
 }
 
@@ -121,11 +121,6 @@ func (rf *Raft) startElection() {
 	if count >= majority && rf.state == Candidate && rf.currentTerm == currentTerm {
 		rf.becomeLeader()
 	}
-}
-
-func (rf *Raft) resetElectionTimeouts() {
-	rf.lastHeartbeat = time.Now()
-	rf.electionTimeouts = time.Duration(150+rand.Intn(150)) * time.Millisecond
 }
 
 // example code to send a RequestVote RPC to a server.
