@@ -1,7 +1,7 @@
 package raft
 
 import (
-	"sync"
+	"time"
 )
 
 // example RequestVote RPC arguments structure.
@@ -75,6 +75,7 @@ func (rf *Raft) startElection() {
 		return
 	}
 	rf.becomeCandidate()
+	rf.resetElectionTimeouts()
 	DPrintf("%d starting new election, term %d", rf.me, rf.currentTerm)
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -82,44 +83,44 @@ func (rf *Raft) startElection() {
 		LastLogIndex: len(rf.log) - 1,
 		LastLogTerm:  rf.log[len(rf.log)-1].Term,
 	}
-	currentTerm := rf.currentTerm
-	count := 1
-	finished := 1
 	total := len(rf.peers)
 	majority := total/2 + 1
-	cond := sync.NewCond(&rf.mu)
 
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		go func(server int) {
-			reply := &RequestVoteReply{}
-			DPrintf("%d sending vote request to %d, term: %d", rf.me, server, currentTerm)
-			ok := rf.sendRequestVote(server, args, reply)
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			if ok {
-				if reply.Term > rf.currentTerm {
-					rf.becomeFollower(reply.Term)
-				} else if rf.state == Candidate && currentTerm == reply.Term && reply.VoteGranted {
-					count++
-				}
-				DPrintf("%d received vote reply from %d, result %v", rf.me, server, reply.VoteGranted)
-			} else {
-				DPrintf("%d faild to receive vote reply from %d", rf.me, server)
-			}
-			finished++
-			cond.Broadcast()
-		}(i)
+		go rf.sendRequestVoteToServer(i, args, majority)
 	}
+}
 
-	for count < majority && finished < total && rf.state == Candidate && rf.currentTerm == currentTerm {
-		cond.Wait()
+func (rf *Raft) sendRequestVoteToServer(server int, args *RequestVoteArgs, majority int) {
+	sendTime := time.Now().Format("2006/01/02 15:04:05.000000")
+	reply := &RequestVoteReply{}
+	DPrintf("%d sending vote request to %d, term: %d, sendtime %v", rf.me, server, args.Term, sendTime)
+	ok := rf.sendRequestVote(server, args, reply)
+	if !ok {
+		DPrintf("%d faild to receive vote reply from %d, sendtime %v", rf.me, server, sendTime)
+		return
 	}
-
-	if count >= majority && rf.state == Candidate && rf.currentTerm == currentTerm {
-		rf.becomeLeader()
+	DPrintf("%d received vote reply from %d, result %v, sendtime %v", rf.me, server, reply.VoteGranted, sendTime)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.currentTerm != args.Term {
+		return
+	}
+	if reply.Term > rf.currentTerm {
+		rf.becomeFollower(reply.Term)
+		return
+	}
+	if rf.state != Candidate {
+		return
+	}
+	if reply.VoteGranted {
+		rf.votesReceived++
+		if rf.votesReceived >= majority {
+			rf.becomeLeader()
+		}
 	}
 }
 

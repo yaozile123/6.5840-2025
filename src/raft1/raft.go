@@ -48,6 +48,7 @@ type Raft struct {
 	matchIndex         []int               // for each server, index of highest log entry known to be replicated on server
 	log                []LogEntry          // index start at 1
 	state              State               // candidate, leader, follower
+	votesReceived      int
 	electionTimeouts   time.Time
 	heartbeatsTimeouts time.Time
 	heartbeatsTime     time.Duration
@@ -79,7 +80,7 @@ func (rf *Raft) becomeCandidate() {
 	rf.state = Candidate
 	rf.currentTerm++
 	rf.votedFor = rf.me
-	rf.resetElectionTimeouts()
+	rf.votesReceived = 1
 }
 
 // called after grab lock in ticker()
@@ -101,7 +102,7 @@ func (rf *Raft) becomeLeader() {
 }
 
 func (rf *Raft) resetElectionTimeouts() {
-	timeout := time.Duration(150+rand.Intn(150)) * time.Millisecond
+	timeout := time.Duration(175+rand.Intn(150)) * time.Millisecond
 	rf.electionTimeouts = time.Now().Add(timeout)
 }
 
@@ -230,7 +231,8 @@ func (rf *Raft) sendHeartbeats() {
 }
 
 func (rf *Raft) sendHeartbeatToServer(server int, term int, commitIndex int) {
-	DPrintf("%d sending heartbeats to %d, term %d", rf.me, server, term)
+	sendTime := time.Now().Format("2006/01/02 15:04:05.000000")
+	DPrintf("%d sending heartbeats to %d, term %d, sendtime %v", rf.me, server, term, sendTime)
 	args := &AppendEntriesArgs{
 		Term:         term,
 		LeaderId:     rf.me,
@@ -242,14 +244,14 @@ func (rf *Raft) sendHeartbeatToServer(server int, term int, commitIndex int) {
 	reply := &AppendEntriesReply{}
 	if rf.sendAppendEntries(server, args, reply) {
 		rf.mu.Lock()
-		DPrintf("%d received heartbeats reply from %d, term %d", rf.me, server, term)
+		DPrintf("%d received heartbeats reply from %d, term %d, sendtime %v", rf.me, server, term, sendTime)
 		if reply.Term > rf.currentTerm {
 			DPrintf("%d received reply with higher term, converting to Follower", rf.me)
 			rf.becomeFollower(reply.Term)
 		}
 		rf.mu.Unlock()
 	} else {
-		DPrintf("%d did not receive heartbeats from %d, term %d", rf.me, server, term)
+		DPrintf("%d did not receive heartbeats from %d, term %d, sendtime %v", rf.me, server, term, sendTime)
 	}
 }
 
@@ -307,24 +309,26 @@ func (rf *Raft) ticker() {
 		// Your code here (3A)
 		// Check if a leader election should be started.
 		rf.mu.Lock()
+		DPrintf("checking status for node %d, state %v, term %d", rf.me, rf.state, rf.currentTerm)
 		if rf.state == Leader {
 			if rf.isHeartbeatsTimeout() {
 				DPrintf("leader %d heartbeats timeout, starting send heartbeats", rf.me)
 				rf.sendHeartbeats()
 				rf.resetHeartBeatsTimeouts()
+			} else {
+				DPrintf("%d heatbeat is not time out, remain: %v", rf.me, time.Until(rf.heartbeatsTimeouts))
 			}
 		} else {
 			if rf.isElectionTimeout() {
 				DPrintf("%d election timeout, starting election", rf.me)
 				rf.startElection()
+			} else {
+				DPrintf("%d election is not timeout, remain: %v", rf.me, time.Until(rf.electionTimeouts))
 			}
 		}
 		rf.mu.Unlock()
-
-		// pause for a random amount of time between 50 and 100 ms
-		// use random amount of time to avoid thundering herd
-		ms := 10 + (rand.Int63() % 50)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		DPrintf("%d sleep for 15 ms", rf.me)
+		time.Sleep(15 * time.Millisecond)
 	}
 }
 
