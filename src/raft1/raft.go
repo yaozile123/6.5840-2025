@@ -30,7 +30,7 @@ const (
 
 type LogEntry struct {
 	Term    int
-	Command string
+	Command interface{}
 }
 
 // A Go object implementing a single Raft peer.
@@ -165,17 +165,17 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []LogEntry
-	LeaderCommit int
+	Term         int        // current leader's term
+	LeaderId     int        // current leader's id
+	PrevLogIndex int        // index of leader's second last log
+	PrevLogTerm  int        // term of leader's second last log
+	Entries      []LogEntry // log entry need to be store, nil for heartbeat
+	LeaderCommit int        // leader's commitIndex
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term    int  // term of server
+	Success bool // success or not
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -213,6 +213,32 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
+}
+
+func (rf *Raft) sendLogsToServer(args *AppendEntriesArgs) {
+	// majority := len(rf.peers) / 2
+	// finished := 1
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		sendTime := time.Now().Format("2006/01/02 15:04:05.000000")
+		go func(server int) {
+			reply := &AppendEntriesReply{}
+			DPrintf("%d sending heartbeats to %d, term %d, sendtime %v", rf.me, i, args.Term, sendTime)
+			ok := rf.sendAppendEntries(server, args, reply)
+			if ok {
+				rf.mu.Lock()
+				DPrintf("%d received logs reply from %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
+				if reply.Term > rf.currentTerm {
+					rf.becomeFollower(reply.Term)
+				}
+				rf.mu.Unlock()
+			} else {
+				DPrintf("%d did not receive logs reply from %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
+			}
+		}(i)
+	}
 }
 
 // called after grab lock in ticker()
@@ -278,10 +304,28 @@ func (rf *Raft) isHeartbeatsTimeout() bool {
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-	isLeader := true
+	isLeader := false
 
 	// Your code here (3B).
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.state != Leader {
+		return index, term, isLeader
+	}
+	isLeader = true
+	term = rf.currentTerm
+	prevLogIndex := len(rf.log) - 1
+	newLogEntry := LogEntry{Term: term, Command: command}
+	rf.log = append(rf.log, newLogEntry)
+	args := &AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  rf.log[prevLogIndex].Term,
+		Entries:      []LogEntry{newLogEntry},
+		LeaderCommit: rf.commitIndex,
+	}
+	rf.sendLogsToServer(args)
 	return index, term, isLeader
 }
 
@@ -352,7 +396,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.log = make([]LogEntry, 1)
-	rf.log[0] = LogEntry{Term: 0, Command: ""}
+	rf.log[0] = LogEntry{Term: 0}
 	rf.state = Follower
 	rf.commitIndex = 0
 	rf.lastApplied = 0
