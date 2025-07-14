@@ -106,14 +106,11 @@ func (rf *Raft) sendRequestVoteToServer(server int, args *RequestVoteArgs, major
 	DPrintf("%d received vote reply from %d, result %v, sendtime %v", rf.me, server, reply.VoteGranted, sendTime)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if rf.currentTerm != args.Term {
+	if rf.currentTerm != args.Term || rf.state != Candidate {
 		return
 	}
 	if reply.Term > rf.currentTerm {
 		rf.becomeFollower(reply.Term)
-		return
-	}
-	if rf.state != Candidate {
 		return
 	}
 	if reply.VoteGranted {

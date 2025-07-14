@@ -2,6 +2,12 @@ package raft
 
 import "time"
 
+type Reason string
+
+const (
+	Conflict Reason = "Conflict"
+)
+
 type AppendEntriesArgs struct {
 	Term         int        // current leader's term
 	LeaderId     int        // current leader's id
@@ -12,8 +18,27 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int  // term of server
-	Success bool // success or not
+	Term         int    // term of server
+	Success      bool   // success or not
+	FailedReason Reason // reason for failure
+}
+
+func (rf *Raft) appendLogs(args *AppendEntriesArgs) {
+	for i := 0; i < len(args.Entries); i++ {
+		logIndex := i + 1 + args.PrevLogIndex
+		if logIndex >= len(rf.log) {
+			// local log is shorter, just append the remaining log from args
+			rf.log = append(rf.log, args.Entries[i:]...)
+			return
+		} else {
+			if rf.log[logIndex].Term != args.Entries[i].Term {
+				// if there's conflict, truncate and append the remaining
+				rf.log = rf.log[:logIndex]
+				rf.log = append(rf.log, args.Entries[i:]...)
+				return
+			}
+		}
+	}
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -32,13 +57,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 
 	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		reply.Success = false
+		// if follower's log is inconsistent with leader's, return conflict in reply
+		reply.FailedReason = Conflict
 		return
 	}
 
 	if args.Entries != nil {
-		rf.log = rf.log[:args.PrevLogIndex+1]
-		rf.log = append(rf.log, args.Entries...)
+		rf.appendLogs(args)
 	}
 
 	if rf.commitIndex < args.LeaderCommit {
@@ -53,29 +78,54 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-func (rf *Raft) sendLogsToServer(args *AppendEntriesArgs) {
+func (rf *Raft) sendLogs() {
 	// majority := len(rf.peers) / 2
 	// finished := 1
 	for i := range rf.peers {
-		if i == rf.me {
+		if i == rf.me || len(rf.log)-1 < rf.nextIndex[i] {
 			continue
 		}
-		sendTime := time.Now().Format("2006/01/02 15:04:05.000000")
-		go func(server int) {
-			reply := &AppendEntriesReply{}
-			DPrintf("%d sending heartbeats to %d, term %d, sendtime %v", rf.me, i, args.Term, sendTime)
-			ok := rf.sendAppendEntries(server, args, reply)
-			if ok {
-				rf.mu.Lock()
-				DPrintf("%d received logs reply from %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
-				if reply.Term > rf.currentTerm {
-					rf.becomeFollower(reply.Term)
-				}
-				rf.mu.Unlock()
-			} else {
-				DPrintf("%d did not receive logs reply from %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
-			}
-		}(i)
+		logIndex := rf.nextIndex[i] - 1
+		args := &AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: logIndex,
+			PrevLogTerm:  rf.log[logIndex].Term,
+			Entries:      make([]LogEntry, 0),
+			LeaderCommit: rf.commitIndex,
+		}
+		args.Entries = append(args.Entries, rf.log[rf.nextIndex[i]:]...)
+		go rf.sendLogsToServer(i, args)
+	}
+}
+
+func (rf *Raft) sendLogsToServer(server int, args *AppendEntriesArgs) {
+	sendTime := time.Now().Format("2006/01/02 15:04:05.000000")
+	reply := &AppendEntriesReply{}
+	DPrintf("%d sending heartbeats to %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
+	ok := rf.sendAppendEntries(server, args, reply)
+	if !ok {
+		DPrintf("%d did not receive logs reply from %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
+		return
+	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	DPrintf("%d received logs reply from %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
+	if rf.currentTerm != args.Term || rf.state != Leader {
+		return
+	}
+	if reply.Term > rf.currentTerm {
+		rf.becomeFollower(reply.Term)
+		return
+	}
+	if reply.Success {
+		match := args.PrevLogIndex + len(args.Entries)
+		next := match + 1
+		rf.nextIndex[server] += max(rf.nextIndex[server], next)
+		rf.matchIndex[server] = max(rf.matchIndex[server], match)
+	} else if reply.FailedReason == Conflict {
+		// TODO: Handle retry
+		rf.nextIndex[server]--
 	}
 }
 

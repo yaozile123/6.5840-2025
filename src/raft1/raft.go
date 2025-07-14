@@ -205,10 +205,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		LeaderId:     rf.me,
 		PrevLogIndex: prevLogIndex,
 		PrevLogTerm:  rf.log[prevLogIndex].Term,
-		Entries:      []LogEntry{newLogEntry},
+		Entries:      nil,
 		LeaderCommit: rf.commitIndex,
 	}
-	rf.sendLogsToServer(args)
+	rf.sendLogs(args)
 	return index, term, isLeader
 }
 
