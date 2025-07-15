@@ -509,6 +509,7 @@ func TestRejoin3B(t *testing.T) {
 
 	// leader network failure
 	leader1 := ts.checkOneLeader()
+	DPrintf("disconnect leader %d", leader1)
 	ts.g.DisconnectAll(leader1)
 	tester.AnnotateConnection(ts.g.GetConnected())
 
@@ -518,6 +519,7 @@ func TestRejoin3B(t *testing.T) {
 	ts.srvs[leader1].Raft().Start(103)
 	ts.srvs[leader1].Raft().Start(104)
 	text := fmt.Sprintf("submitted commands [102 103 104] to %v", leader1)
+	DPrintf(text)
 	tester.AnnotateInfoInterval(start, text, text)
 
 	// new leader commits, also for index=2
@@ -525,15 +527,18 @@ func TestRejoin3B(t *testing.T) {
 
 	// new leader network failure
 	leader2 := ts.checkOneLeader()
+	DPrintf("disconnect new leader %d ", leader2)
 	ts.g.DisconnectAll(leader2)
 
 	// old leader connected again
+	DPrintf("reconnect old leader %d", leader1)
 	ts.g.ConnectOne(leader1)
 	tester.AnnotateConnection(ts.g.GetConnected())
 
 	ts.one(104, 2, true)
 
 	// all together now
+	DPrintf("reconnect leader %d", leader2)
 	ts.g.ConnectOne(leader2)
 	tester.AnnotateConnection(ts.g.GetConnected())
 

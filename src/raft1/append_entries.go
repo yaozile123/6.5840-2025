@@ -81,17 +81,20 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-func (rf *Raft) buildArgs(server int) *AppendEntriesArgs {
+func (rf *Raft) buildArgs(server int, isHeatbeat bool) *AppendEntriesArgs {
 	logIndex := rf.nextIndex[server] - 1
 	args := &AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
 		PrevLogIndex: logIndex,
 		PrevLogTerm:  rf.log[logIndex].Term,
-		Entries:      make([]LogEntry, 0),
+		Entries:      nil,
 		LeaderCommit: rf.commitIndex,
 	}
-	args.Entries = append(args.Entries, rf.log[rf.nextIndex[server]:]...)
+	if !isHeatbeat {
+		args.Entries = make([]LogEntry, 0)
+		args.Entries = append(args.Entries, rf.log[rf.nextIndex[server]:]...)
+	}
 	return args
 }
 
@@ -102,17 +105,7 @@ func (rf *Raft) sendLogs() {
 		if i == rf.me || len(rf.log)-1 < rf.nextIndex[i] {
 			continue
 		}
-		// logIndex := rf.nextIndex[i] - 1
-		// args := &AppendEntriesArgs{
-		// 	Term:         rf.currentTerm,
-		// 	LeaderId:     rf.me,
-		// 	PrevLogIndex: logIndex,
-		// 	PrevLogTerm:  rf.log[logIndex].Term,
-		// 	Entries:      make([]LogEntry, 0),
-		// 	LeaderCommit: rf.commitIndex,
-		// }
-		// args.Entries = append(args.Entries, rf.log[rf.nextIndex[i]:]...)
-		args := rf.buildArgs(i)
+		args := rf.buildArgs(i, false)
 		go rf.sendLogsToServer(i, args)
 	}
 }
@@ -147,7 +140,7 @@ func (rf *Raft) sendLogsToServer(server int, args *AppendEntriesArgs) {
 	} else if reply.FailedReason == Conflict {
 		rf.nextIndex[server]--
 		DPrintf("%d received conflict logs reply from %d, updating its nextIndex to %d", rf.me, server, rf.nextIndex[server])
-		newArgs := rf.buildArgs(server)
+		newArgs := rf.buildArgs(server, false)
 		DPrintf("%d retry sending logs to %d", rf.me, server)
 		go rf.sendLogsToServer(server, newArgs)
 	}
@@ -173,14 +166,8 @@ func (rf *Raft) sendHeartbeats() {
 func (rf *Raft) sendHeartbeatToServer(server int, term int, commitIndex int) {
 	sendTime := time.Now().Format("2006/01/02 15:04:05.000000")
 	// DPrintf("%d sending heartbeats to %d, term %d, sendtime %v", rf.me, server, term, sendTime)
-	args := &AppendEntriesArgs{
-		Term:         term,
-		LeaderId:     rf.me,
-		PrevLogIndex: 0,
-		PrevLogTerm:  0,
-		Entries:      nil,
-		LeaderCommit: commitIndex,
-	}
+	//
+	args := rf.buildArgs(server, true)
 	reply := &AppendEntriesReply{}
 	ok := rf.sendAppendEntries(server, args, reply)
 	if !ok {
