@@ -106,23 +106,23 @@ func (rf *Raft) sendLogs() {
 			continue
 		}
 		args := rf.buildArgs(i, false)
-		go rf.sendLogsToServer(i, args)
+		go rf.sendAppendEntriesToServer(i, args)
 	}
 }
 
 // called in different goroutine
-func (rf *Raft) sendLogsToServer(server int, args *AppendEntriesArgs) {
+func (rf *Raft) sendAppendEntriesToServer(server int, args *AppendEntriesArgs) {
 	sendTime := time.Now().Format("2006/01/02 15:04:05.000000")
 	reply := &AppendEntriesReply{}
-	DPrintf("%d sending logs to %d, term %d, sendtime %v, length %d", rf.me, server, args.Term, sendTime, len(args.Entries))
+	DPrintf("%d sending AppendEntries to %d, term %d, sendtime %v, length %d", rf.me, server, args.Term, sendTime, len(args.Entries))
 	ok := rf.sendAppendEntries(server, args, reply)
 	if !ok {
-		DPrintf("%d did not receive logs reply from %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
+		DPrintf("%d did not receive AppendEntries reply from %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
 		return
 	}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("%d received logs reply from %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
+	DPrintf("%d received AppendEntries reply from %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
 	if rf.currentTerm != args.Term || rf.state != Leader {
 		return
 	}
@@ -131,7 +131,7 @@ func (rf *Raft) sendLogsToServer(server int, args *AppendEntriesArgs) {
 		return
 	}
 	if reply.Success {
-		DPrintf("%d received success logs reply from %d", rf.me, server)
+		DPrintf("%d received success AppendEntries reply from %d", rf.me, server)
 		match := args.PrevLogIndex + len(args.Entries)
 		next := match + 1
 		rf.nextIndex[server] = max(rf.nextIndex[server], next)
@@ -139,10 +139,10 @@ func (rf *Raft) sendLogsToServer(server int, args *AppendEntriesArgs) {
 		rf.leaderCommit()
 	} else if reply.FailedReason == Conflict {
 		rf.nextIndex[server]--
-		DPrintf("%d received conflict logs reply from %d, updating its nextIndex to %d", rf.me, server, rf.nextIndex[server])
+		DPrintf("%d received conflict AppendEntries reply from %d, updating its nextIndex to %d", rf.me, server, rf.nextIndex[server])
 		newArgs := rf.buildArgs(server, false)
-		DPrintf("%d retry sending logs to %d", rf.me, server)
-		go rf.sendLogsToServer(server, newArgs)
+		DPrintf("%d retry sending AppendEntries to %d", rf.me, server)
+		go rf.sendAppendEntriesToServer(server, newArgs)
 	}
 }
 
@@ -151,33 +151,12 @@ func (rf *Raft) sendHeartbeats() {
 	if rf.state != Leader {
 		return
 	}
-	term := rf.currentTerm
-	commitIndex := rf.commitIndex
-	DPrintf("%d sending heartbeats, term %d", rf.me, term)
+	DPrintf("%d sending heartbeats, term %d", rf.me, rf.currentTerm)
 	for i := range rf.peers {
 		if rf.me != i {
-			go rf.sendHeartbeatToServer(i, term, commitIndex)
+			// go rf.sendHeartbeatToServer(i, term, commitIndex)
+			args := rf.buildArgs(i, true)
+			go rf.sendAppendEntriesToServer(i, args)
 		}
-	}
-}
-
-// sending heatbeat to target server
-// called in different go routine
-func (rf *Raft) sendHeartbeatToServer(server int, term int, commitIndex int) {
-	sendTime := time.Now().Format("2006/01/02 15:04:05.000000")
-	// DPrintf("%d sending heartbeats to %d, term %d, sendtime %v", rf.me, server, term, sendTime)
-	//
-	args := rf.buildArgs(server, true)
-	reply := &AppendEntriesReply{}
-	ok := rf.sendAppendEntries(server, args, reply)
-	if !ok {
-		DPrintf("%d did not receive heartbeats from %d, term %d, sendtime %v", rf.me, server, term, sendTime)
-		return
-	}
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	if reply.Term > rf.currentTerm {
-		DPrintf("%d received reply with higher term, converting to Follower", rf.me)
-		rf.becomeFollower(reply.Term)
 	}
 }
