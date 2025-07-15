@@ -69,6 +69,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.commitIndex < args.LeaderCommit {
 		lastLogIndex := len(rf.log) - 1
 		rf.commitIndex = min(args.LeaderCommit, lastLogIndex)
+		rf.apply()
 	}
 	reply.Success = true
 }
@@ -78,9 +79,9 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
+// send log to each server, acquired lock after call Start()
 func (rf *Raft) sendLogs() {
-	// majority := len(rf.peers) / 2
-	// finished := 1
+	DPrintf("%d send logs to server, term %d", rf.me, rf.currentTerm)
 	for i := range rf.peers {
 		if i == rf.me || len(rf.log)-1 < rf.nextIndex[i] {
 			continue
@@ -99,10 +100,11 @@ func (rf *Raft) sendLogs() {
 	}
 }
 
+// acquired lock in Start()
 func (rf *Raft) sendLogsToServer(server int, args *AppendEntriesArgs) {
 	sendTime := time.Now().Format("2006/01/02 15:04:05.000000")
 	reply := &AppendEntriesReply{}
-	DPrintf("%d sending heartbeats to %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
+	DPrintf("%d sending logs to %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
 	ok := rf.sendAppendEntries(server, args, reply)
 	if !ok {
 		DPrintf("%d did not receive logs reply from %d, term %d, sendtime %v", rf.me, server, args.Term, sendTime)
@@ -119,14 +121,17 @@ func (rf *Raft) sendLogsToServer(server int, args *AppendEntriesArgs) {
 		return
 	}
 	if reply.Success {
+		DPrintf("%d received success logs reply from %d", rf.me, server)
 		match := args.PrevLogIndex + len(args.Entries)
 		next := match + 1
-		rf.nextIndex[server] += max(rf.nextIndex[server], next)
+		rf.nextIndex[server] = max(rf.nextIndex[server], next)
 		rf.matchIndex[server] = max(rf.matchIndex[server], match)
+		rf.leaderCommit()
 	} else if reply.FailedReason == Conflict {
-		// TODO: Handle retry
+		DPrintf("%d received conflict logs reply from %d", rf.me, server)
 		rf.nextIndex[server]--
 	}
+	// DPrintf("%d state after send logs to server %v ")
 }
 
 // called after grab lock in ticker()
@@ -146,7 +151,7 @@ func (rf *Raft) sendHeartbeats() {
 
 func (rf *Raft) sendHeartbeatToServer(server int, term int, commitIndex int) {
 	sendTime := time.Now().Format("2006/01/02 15:04:05.000000")
-	DPrintf("%d sending heartbeats to %d, term %d, sendtime %v", rf.me, server, term, sendTime)
+	// DPrintf("%d sending heartbeats to %d, term %d, sendtime %v", rf.me, server, term, sendTime)
 	args := &AppendEntriesArgs{
 		Term:         term,
 		LeaderId:     rf.me,
@@ -158,7 +163,7 @@ func (rf *Raft) sendHeartbeatToServer(server int, term int, commitIndex int) {
 	reply := &AppendEntriesReply{}
 	if rf.sendAppendEntries(server, args, reply) {
 		rf.mu.Lock()
-		DPrintf("%d received heartbeats reply from %d, term %d, sendtime %v", rf.me, server, term, sendTime)
+		// DPrintf("%d received heartbeats reply from %d, term %d, sendtime %v", rf.me, server, term, sendTime)
 		if reply.Term > rf.currentTerm {
 			DPrintf("%d received reply with higher term, converting to Follower", rf.me)
 			rf.becomeFollower(reply.Term)

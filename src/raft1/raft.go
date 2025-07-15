@@ -31,6 +31,7 @@ const (
 type LogEntry struct {
 	Term    int
 	Command interface{}
+	Index   int
 }
 
 // A Go object implementing a single Raft peer.
@@ -52,6 +53,8 @@ type Raft struct {
 	electionTimeouts   time.Time
 	heartbeatsTimeouts time.Time
 	heartbeatsTime     time.Duration
+	applyCond          *sync.Cond
+	applyCh            chan raftapi.ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -195,21 +198,76 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.state != Leader {
 		return index, term, isLeader
 	}
+	DPrintf("leader %d term %d received command %v", rf.me, rf.currentTerm, command)
 	isLeader = true
 	term = rf.currentTerm
-	prevLogIndex := len(rf.log) - 1
-	newLogEntry := LogEntry{Term: term, Command: command}
+	index = len(rf.log)
+	newLogEntry := LogEntry{Term: term, Command: command, Index: index}
 	rf.log = append(rf.log, newLogEntry)
-	args := &AppendEntriesArgs{
-		Term:         rf.currentTerm,
-		LeaderId:     rf.me,
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  rf.log[prevLogIndex].Term,
-		Entries:      nil,
-		LeaderCommit: rf.commitIndex,
-	}
-	rf.sendLogs(args)
+	DPrintf("leader current next index %v", rf.nextIndex)
+	rf.sendLogs()
 	return index, term, isLeader
+}
+
+// Update commitIndex and then send applyMsg, acquired lock in Start()
+func (rf *Raft) leaderCommit() {
+	if rf.state != Leader {
+		return
+	}
+	DPrintf("leader %d committing logs", rf.me)
+	for i := len(rf.log) - 1; i > rf.commitIndex; i-- {
+		DPrintf("checking log at index %d", i)
+		if rf.log[i].Term != rf.currentTerm {
+			continue
+		}
+		count := 1
+		for server := range rf.peers {
+			if server == rf.me {
+				continue
+			}
+			if rf.matchIndex[server] >= i {
+				count++
+			}
+		}
+		// if most of the server replicated log[i], we can safe to commit
+		if count > len(rf.peers)/2 {
+			DPrintf("log at index %d become new commitIndex", i)
+			rf.commitIndex = i
+			rf.apply()
+			return
+		}
+	}
+}
+
+// send apply msg after update the commitIndex
+func (rf *Raft) apply() {
+	DPrintf("server %d broadcast", rf.me)
+	rf.applyCond.Broadcast()
+}
+
+func (rf *Raft) applier() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	for !rf.killed() {
+		DPrintf("server %d current commitIndex %d, lastApplied %d", rf.me, rf.commitIndex, rf.lastApplied)
+		if rf.commitIndex > rf.lastApplied {
+			rf.lastApplied++
+			DPrintf("server %d apply log at index %d", rf.me, rf.lastApplied)
+			applyMsg := raftapi.ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[rf.lastApplied].Command,
+				CommandIndex: rf.lastApplied,
+			}
+			// need tp unlock before send to channel
+			// otherwise channel will block the thread untill msg get consumed
+			rf.mu.Unlock()
+			DPrintf("server %d sending command %v to applyCh", rf.me, applyMsg.Command)
+			rf.applyCh <- applyMsg
+			rf.mu.Lock()
+		} else {
+			rf.applyCond.Wait()
+		}
+	}
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -236,25 +294,25 @@ func (rf *Raft) ticker() {
 		// Your code here (3A)
 		// Check if a leader election should be started.
 		rf.mu.Lock()
-		DPrintf("checking status for node %d, state %v, term %d", rf.me, rf.state, rf.currentTerm)
+		// DPrintf("checking status for node %d, state %v, term %d", rf.me, rf.state, rf.currentTerm)
 		if rf.state == Leader {
 			if rf.isHeartbeatsTimeout() {
-				DPrintf("leader %d heartbeats timeout, starting send heartbeats", rf.me)
+				// DPrintf("leader %d heartbeats timeout, starting send heartbeats", rf.me)
 				rf.sendHeartbeats()
 				rf.resetHeartBeatsTimeouts()
 			} else {
-				DPrintf("%d heatbeat is not time out, remain: %v", rf.me, time.Until(rf.heartbeatsTimeouts))
+				// DPrintf("%d heatbeat is not time out, remain: %v", rf.me, time.Until(rf.heartbeatsTimeouts))
 			}
 		} else {
 			if rf.isElectionTimeout() {
-				DPrintf("%d election timeout, starting election", rf.me)
+				// DPrintf("%d election timeout, starting election", rf.me)
 				rf.startElection()
 			} else {
-				DPrintf("%d election is not timeout, remain: %v", rf.me, time.Until(rf.electionTimeouts))
+				// DPrintf("%d election is not timeout, remain: %v", rf.me, time.Until(rf.electionTimeouts))
 			}
 		}
 		rf.mu.Unlock()
-		DPrintf("%d sleep for 15 ms", rf.me)
+		// DPrintf("%d sleep for 15 ms", rf.me)
 		time.Sleep(15 * time.Millisecond)
 	}
 }
@@ -279,10 +337,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.log = make([]LogEntry, 1)
-	rf.log[0] = LogEntry{Term: 0}
+	rf.log[0] = LogEntry{Term: 0, Index: 0}
 	rf.state = Follower
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.applyCond = sync.NewCond(&rf.mu)
+	rf.applyCh = applyCh
 	rf.heartbeatsTime = time.Millisecond * 100
 	rf.resetElectionTimeouts()
 
@@ -291,6 +351,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	DPrintf("server %d initialized", rf.me)
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
+	go rf.applier()
 	return rf
 }
