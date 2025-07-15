@@ -249,8 +249,8 @@ func (rf *Raft) applier() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	for !rf.killed() {
-		DPrintf("server %d current commitIndex %d, lastApplied %d", rf.me, rf.commitIndex, rf.lastApplied)
-		if rf.commitIndex > rf.lastApplied {
+		DPrintf("%d applier wake up, current commitIndex %d, lastApplied %d", rf.me, rf.commitIndex, rf.lastApplied)
+		for rf.commitIndex > rf.lastApplied {
 			rf.lastApplied++
 			DPrintf("server %d apply log at index %d", rf.me, rf.lastApplied)
 			applyMsg := raftapi.ApplyMsg{
@@ -264,9 +264,8 @@ func (rf *Raft) applier() {
 			DPrintf("server %d sending command %v to applyCh", rf.me, applyMsg.Command)
 			rf.applyCh <- applyMsg
 			rf.mu.Lock()
-		} else {
-			rf.applyCond.Wait()
 		}
+		rf.applyCond.Wait()
 	}
 }
 

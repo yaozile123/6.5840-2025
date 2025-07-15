@@ -229,6 +229,7 @@ func (ts *Test) one(cmd any, expectedServers int, retry bool) int {
 	textcmd := fmt.Sprintf("%v", cmd)
 	textb := fmt.Sprintf("checking agreement of %.8s by at least %v servers %v retry",
 		textcmd, expectedServers, textretry)
+	DPrintf(textb)
 	tester.AnnotateCheckerBegin(textb)
 	t0 := time.Now()
 	starts := 0

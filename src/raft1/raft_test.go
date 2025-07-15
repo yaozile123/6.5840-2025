@@ -295,6 +295,7 @@ func TestFailAgree3B(t *testing.T) {
 
 	// disconnect one follower from the network.
 	leader := ts.checkOneLeader()
+	DPrintf("disconnect server %d", (leader+1)%servers)
 	ts.g.DisconnectAll((leader + 1) % servers)
 	tester.AnnotateConnection(ts.g.GetConnected())
 
@@ -307,14 +308,17 @@ func TestFailAgree3B(t *testing.T) {
 	ts.one(105, servers-1, false)
 
 	// re-connect
+	DPrintf("reconnect server %d", (leader+1)%servers)
 	ts.g.ConnectOne((leader + 1) % servers)
 	tester.AnnotateConnection(ts.g.GetConnected())
 
 	// the full set of servers should preserve
 	// previous agreements, and be able to agree
 	// on new commands.
+	DPrintf("testing agreement on command 106")
 	ts.one(106, servers, true)
 	time.Sleep(RaftElectionTimeout)
+	DPrintf("testing agreement on command 107")
 	ts.one(107, servers, true)
 }
 
