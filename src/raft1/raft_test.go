@@ -557,6 +557,9 @@ func TestBackup3B(t *testing.T) {
 
 	// put leader and one follower in a partition
 	leader1 := ts.checkOneLeader()
+	DPrintf("disconnect server %d", (leader1+2)%servers)
+	DPrintf("disconnect server %d", (leader1+3)%servers)
+	DPrintf("disconnect server %d", (leader1+4)%servers)
 	ts.g.DisconnectAll((leader1 + 2) % servers)
 	ts.g.DisconnectAll((leader1 + 3) % servers)
 	ts.g.DisconnectAll((leader1 + 4) % servers)
@@ -568,14 +571,20 @@ func TestBackup3B(t *testing.T) {
 		ts.srvs[leader1].Raft().Start(rand.Int())
 	}
 	text := fmt.Sprintf("submitted 50 commands to %v", leader1)
+	DPrintf(text)
 	tester.AnnotateInfoInterval(start, text, text)
 
 	time.Sleep(RaftElectionTimeout / 2)
 
+	DPrintf("disconnect server %d", (leader1+0)%servers)
+	DPrintf("disconnect server %d", (leader1+1)%servers)
 	ts.g.DisconnectAll((leader1 + 0) % servers)
 	ts.g.DisconnectAll((leader1 + 1) % servers)
 
 	// allow other partition to recover
+	DPrintf("reconnect server %d", (leader1+2)%servers)
+	DPrintf("reconnect server %d", (leader1+3)%servers)
+	DPrintf("reconnect server %d", (leader1+4)%servers)
 	ts.g.ConnectOne((leader1 + 2) % servers)
 	ts.g.ConnectOne((leader1 + 3) % servers)
 	ts.g.ConnectOne((leader1 + 4) % servers)
@@ -592,6 +601,7 @@ func TestBackup3B(t *testing.T) {
 	if leader2 == other {
 		other = (leader2 + 1) % servers
 	}
+	DPrintf("disconnect server %d", other)
 	ts.g.DisconnectAll(other)
 	tester.AnnotateConnection(ts.g.GetConnected())
 
@@ -601,14 +611,19 @@ func TestBackup3B(t *testing.T) {
 		ts.srvs[leader2].Raft().Start(rand.Int())
 	}
 	text = fmt.Sprintf("submitted 50 commands to %v", leader2)
+	DPrintf(text)
 	tester.AnnotateInfoInterval(start, text, text)
 
 	time.Sleep(RaftElectionTimeout / 2)
 
 	// bring original leader back to life,
 	for i := 0; i < servers; i++ {
+		DPrintf("disconnect server %d", i)
 		ts.g.DisconnectAll(i)
 	}
+	DPrintf("reconnect server %d", (leader1+0)%servers)
+	DPrintf("reconnect server %d", (leader1+1)%servers)
+	DPrintf("reconnect server %d", other)
 	ts.g.ConnectOne((leader1 + 0) % servers)
 	ts.g.ConnectOne((leader1 + 1) % servers)
 	ts.g.ConnectOne(other)
@@ -621,6 +636,7 @@ func TestBackup3B(t *testing.T) {
 
 	// now everyone
 	for i := 0; i < servers; i++ {
+		DPrintf("reconnect server %d", i)
 		ts.g.ConnectOne(i)
 	}
 	tester.AnnotateConnection(ts.g.GetConnected())

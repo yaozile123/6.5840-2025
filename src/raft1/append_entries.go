@@ -101,6 +101,7 @@ func (rf *Raft) buildArgs(server int, isHeatbeat bool) *AppendEntriesArgs {
 // send log to each server, acquired lock after call Start()
 func (rf *Raft) sendLogs() {
 	DPrintf("%d send logs to server, term %d", rf.me, rf.currentTerm)
+	rf.resetHeartBeatsTimeouts()
 	for i := range rf.peers {
 		if i == rf.me || len(rf.log)-1 < rf.nextIndex[i] {
 			continue
