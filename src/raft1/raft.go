@@ -101,7 +101,7 @@ func (rf *Raft) becomeLeader() {
 		rf.matchIndex[i] = 0
 	}
 	DPrintf("%d become leader, term %d", rf.me, rf.currentTerm)
-	rf.sendHeartbeats()
+	rf.sendLogs(true)
 }
 
 func (rf *Raft) resetElectionTimeouts() {
@@ -205,7 +205,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	newLogEntry := LogEntry{Term: term, Command: command, Index: index}
 	rf.log = append(rf.log, newLogEntry)
 	DPrintf("leader current next index %v", rf.nextIndex)
-	rf.sendLogs()
+	rf.sendLogs(false)
 	return index, term, isLeader
 }
 
@@ -297,8 +297,7 @@ func (rf *Raft) ticker() {
 		if rf.state == Leader {
 			if rf.isHeartbeatsTimeout() {
 				// DPrintf("leader %d heartbeats timeout, starting send heartbeats", rf.me)
-				rf.sendHeartbeats()
-				rf.resetHeartBeatsTimeouts()
+				rf.sendLogs(true)
 			} else {
 				// DPrintf("%d heatbeat is not time out, remain: %v", rf.me, time.Until(rf.heartbeatsTimeouts))
 			}

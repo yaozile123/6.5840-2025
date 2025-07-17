@@ -2,12 +2,6 @@ package raft
 
 import "time"
 
-type Reason string
-
-const (
-	Conflict Reason = "Conflict"
-)
-
 type AppendEntriesArgs struct {
 	Term         int        // current leader's term
 	LeaderId     int        // current leader's id
@@ -18,9 +12,12 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term         int    // term of server
-	Success      bool   // success or not
-	FailedReason Reason // reason for failure
+	Term     int  // term of server
+	Success  bool // success or not
+	Conflict bool // conflict or not
+	XTerm    int  // term of conflicting entry
+	XIndex   int  // index of first entry with XTerm in follower
+	XLen     int  // length of follower's log
 }
 
 func (rf *Raft) appendLogs(args *AppendEntriesArgs) {
@@ -47,6 +44,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	DPrintf("%d received AppendEntries from %d, has %d entries", rf.me, args.LeaderId, len(args.Entries))
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
+	reply.Conflict = false
 	reply.Success = false
 	if args.Term < rf.currentTerm {
 		DPrintf("%d reject AppendEntries from %d, reason: args term %d is less than current term %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
@@ -58,9 +56,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	reply.Term = rf.currentTerm
 
-	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if len(rf.log) <= args.PrevLogIndex {
 		// if follower's log is inconsistent with leader's, return conflict in reply
-		reply.FailedReason = Conflict
+		// case 3: length of follower's log is less than prevLogIndex
+		// set the nextIndex back to XLen
+		reply.Conflict = true
+		reply.XIndex = -1
+		reply.XTerm = -1
+		reply.XLen = len(rf.log)
+		return
+	}
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		xTerm := rf.log[args.PrevLogIndex].Term
+		for index := args.PrevLogIndex; index > 0; index-- {
+			if rf.log[index-1].Term != xTerm {
+				reply.XIndex = index
+				break
+			}
+		}
+		reply.Conflict = true
+		reply.XTerm = xTerm
+		reply.XLen = len(rf.log)
 		return
 	}
 	if args.Entries != nil {
@@ -81,34 +97,34 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-func (rf *Raft) buildArgs(server int, isHeatbeat bool) *AppendEntriesArgs {
+func (rf *Raft) buildArgs(server int) *AppendEntriesArgs {
 	logIndex := rf.nextIndex[server] - 1
 	args := &AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
 		PrevLogIndex: logIndex,
 		PrevLogTerm:  rf.log[logIndex].Term,
-		Entries:      nil,
+		Entries:      make([]LogEntry, 0),
 		LeaderCommit: rf.commitIndex,
 	}
-	if !isHeatbeat {
-		args.Entries = make([]LogEntry, 0)
-		args.Entries = append(args.Entries, rf.log[rf.nextIndex[server]:]...)
-	}
+	args.Entries = append(args.Entries, rf.log[rf.nextIndex[server]:]...)
 	return args
 }
 
 // send log to each server, acquired lock after call Start()
-func (rf *Raft) sendLogs() {
-	DPrintf("%d send logs to server, term %d", rf.me, rf.currentTerm)
-	rf.resetHeartBeatsTimeouts()
+func (rf *Raft) sendLogs(isHeartbeat bool) {
+	if rf.state != Leader {
+		return
+	}
+	DPrintf("%d send logs to server, term %d, isHeartbeat%v", rf.me, rf.currentTerm, isHeartbeat)
 	for i := range rf.peers {
-		if i == rf.me || len(rf.log)-1 < rf.nextIndex[i] {
+		if i == rf.me || (len(rf.log)-1 < rf.nextIndex[i] && !isHeartbeat) {
 			continue
 		}
-		args := rf.buildArgs(i, false)
+		args := rf.buildArgs(i)
 		go rf.sendAppendEntriesToServer(i, args)
 	}
+	rf.resetHeartBeatsTimeouts()
 }
 
 // called in different goroutine
@@ -138,26 +154,33 @@ func (rf *Raft) sendAppendEntriesToServer(server int, args *AppendEntriesArgs) {
 		rf.nextIndex[server] = max(rf.nextIndex[server], next)
 		rf.matchIndex[server] = max(rf.matchIndex[server], match)
 		rf.leaderCommit()
-	} else if reply.FailedReason == Conflict {
-		rf.nextIndex[server]--
-		DPrintf("%d received conflict AppendEntries reply from %d, updating its nextIndex to %d", rf.me, server, rf.nextIndex[server])
-		newArgs := rf.buildArgs(server, false)
-		DPrintf("%d retry sending AppendEntries to %d", rf.me, server)
-		go rf.sendAppendEntriesToServer(server, newArgs)
+	} else if reply.Conflict {
+		// DPrintf("%d received conflict AppendEntries reply from %d, updating its nextIndex to %d", rf.me, server, rf.nextIndex[server])
+		if reply.XTerm == -1 {
+			//   Case 3: follower's log is too short: nextIndex = XLen
+			rf.nextIndex[server] = reply.XLen
+		} else {
+			lastTermIndex := rf.findLastTermIndex(reply.XTerm)
+			if lastTermIndex == -1 {
+				// case1: leader didn't have XTerm nextIndex = XIndex
+				rf.nextIndex[server] = reply.XIndex
+			} else {
+				// case2: leader did have XTerm
+				// nextIndex = (index of leader's last entry for XTerm) + 1
+				rf.nextIndex[server] = lastTermIndex + 1
+			}
+		}
+		// newArgs := rf.buildArgs(server)
+		// DPrintf("%d retry sending AppendEntries to %d", rf.me, server)
+		// go rf.sendAppendEntriesToServer(server, newArgs)
 	}
 }
 
-// called after grab lock in ticker()
-func (rf *Raft) sendHeartbeats() {
-	if rf.state != Leader {
-		return
-	}
-	DPrintf("%d sending heartbeats, term %d", rf.me, rf.currentTerm)
-	for i := range rf.peers {
-		if rf.me != i {
-			// go rf.sendHeartbeatToServer(i, term, commitIndex)
-			args := rf.buildArgs(i, true)
-			go rf.sendAppendEntriesToServer(i, args)
+func (rf *Raft) findLastTermIndex(term int) int {
+	for index := len(rf.log) - 1; index >= 0; index-- {
+		if rf.log[index].Term == term {
+			return index
 		}
 	}
+	return -1
 }
