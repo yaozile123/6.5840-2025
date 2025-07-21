@@ -81,6 +81,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	if args.Entries != nil {
 		rf.appendLogs(args)
+		rf.persist()
 	}
 	if rf.commitIndex < args.LeaderCommit {
 		lastLogIndex := len(rf.log) - 1

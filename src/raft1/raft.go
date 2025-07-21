@@ -78,6 +78,7 @@ func (rf *Raft) becomeFollower(term int) {
 	rf.votedFor = -1
 	DPrintf("%d become to Follower from %v", rf.me, rf.state)
 	rf.state = Follower
+	rf.persist()
 }
 
 func (rf *Raft) becomeCandidate() {
@@ -86,6 +87,7 @@ func (rf *Raft) becomeCandidate() {
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.votesReceived = 1
+	rf.persist()
 }
 
 // called after grab lock in ticker()
@@ -231,6 +233,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.log = append(rf.log, newLogEntry)
 	DPrintf("leader current next index %v", rf.nextIndex)
 	rf.sendLogs(false)
+	rf.persist()
 	return index, term, isLeader
 }
 

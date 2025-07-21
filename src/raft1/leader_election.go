@@ -53,6 +53,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	rf.votedFor = args.CandidateId
+	rf.persist()
 	reply.VoteGranted = true
 	rf.resetElectionTimeouts()
 	DPrintf("%d vote for %d with, term %d, vote result %v", rf.me, args.CandidateId, args.Term, reply.VoteGranted)
